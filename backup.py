@@ -9,10 +9,17 @@ key = next(
     if line.startswith("KEY=")
 )
 
-# Define and create the output directory
-output_dir = Path("/data")
+# Define and create the local data directory inside your project folder
+output_dir = base / "data"
 output_dir.mkdir(parents=True, exist_ok=True)
 
+# Completely clear out any old files in the data directory 
+# so only the newest backup parts remain
+for existing_file in output_dir.iterdir():
+    if existing_file.is_file():
+        existing_file.unlink()
+
+# Run 7-Zip to create the new multi-volume archive
 subprocess.run(
     [
         r"C:\Program Files\7-Zip\7z.exe",
