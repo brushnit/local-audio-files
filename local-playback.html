@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Player</title>
+    <style>
+      body { max-width: 40em; margin: 1em auto; padding: 0 1em; text-align: center; }
+      ol { list-style-position: inside; padding: 0; }
+      table { margin: auto; }
+    </style>
+  </head>
+  <body>
+    <h2>Player</h2>
+    <audio id="a" controls preload="metadata"></audio>
+    <p id="now">Nothing loaded.</p>
+    <canvas id="viz" width="300" height="60"></canvas>
+    <p>Volume <input type="range" id="vol" min="0" max="1" step="0.01" value="1">
+       <label><input type="checkbox" id="mute"> Mute</label></p>
+    <p>Seek <input type="range" id="seek" min="0" step="0.1" value="0"> <span id="t"></span></p>
+    <p>Speed
+      <select id="rate"><option>0.5</option><option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option></select>
+      <label><input type="checkbox" id="pitch" checked> Keep pitch</label>
+      <label><input type="checkbox" id="loop"> Loop track</label>
+      <label><input type="checkbox" id="shuffle"> Shuffle</label></p>
+    <p>
+      <button id="prev">Prev</button>
+      <button id="next">Next</button>
+      <a id="dl">Download current</a>
+      <button id="an">Analyze</button>
+      <button id="clear">Clear library</button>
+    </p>
+    <pre id="info"></pre>
+    <canvas id="wave" width="300" height="60"></canvas>
+    <ol id="list"></ol>
+    <p id="q"></p>
+
+    <hr>
+    <h2>Add audio</h2>
+    <p>File picker: <input type="file" id="f" multiple accept="audio/*,.opus,.flac"></p>
+    <p>Folder picker: <input type="file" id="d" webkitdirectory multiple></p>
+    <p>Drag and drop files anywhere on this page, or paste a copied file (Ctrl/Cmd+V).</p>
+    <p>Mobile recorder (the capture attribute): <input type="file" id="c" accept="audio/*" capture></p>
+    <p><button id="fs">File System Access picker</button> <button id="rec">Record microphone</button></p>
+    <p>URL (server must allow CORS): <input type="url" id="u"> <button id="ug">Load</button></p>
+
+    <hr>
+    <h2>Formats this browser can play</h2>
+    <table id="fmt"></table>
+
+    <script>
+      const $ = id => document.getElementById(id), a = $('a'), KEY = 'audio-demo';
+      const AUDIO = /\.(mp3|wav|ogg|oga|opus|m4a|aac|flac|weba|webm)$/i;
+      const req = r => new Promise((ok, no) => { r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error); });
+      const store = mode => db.transaction('files', mode).objectStore('files');
+      let db, tracks = [], cur = -1;                       // tracks: { id, file, url }
+
+      /* ---------- library: IndexedDB blobs + object URLs ---------- */
+      async function add(files) {                          // every input method ends up here
+        for (const file of [...files].filter(f => f.type.startsWith('audio/') || AUDIO.test(f.name))) {
+          try {
+            const id = await req(store('readwrite').add({ file }));
+            tracks.push({ id, file, url: URL.createObjectURL(file) });
+          } catch (e) { alert('Could not save ' + file.name + ' (storage full or blocked?)'); }
+        }
+        navigator.storage?.persist?.();                    // ask the browser not to evict our data
+        render(); quota();
+        if (cur < 0 && tracks.length) pick(0);
+      }
+
+      function pick(i, play) {
+        cur = i; a.src = tracks[i].url;
+        $('now').textContent = tracks[i].file.name;
+        $('dl').href = tracks[i].url; $('dl').download = tracks[i].file.name;   // native save-to-disk
+        if ('mediaSession' in navigator) navigator.mediaSession.metadata = new MediaMetadata({ title: tracks[i].file.name });
+        if (play) a.play();
+        save(); render();
+      }
+
+      async function del(i) {
+        await req(store('readwrite').delete(tracks[i].id));
+        URL.revokeObjectURL(tracks[i].url); tracks.splice(i, 1);
+        if (i === cur) {
+          cur = -1; a.removeAttribute('src'); a.load(); $('now').textContent = 'Nothing loaded.';
+          if (tracks.length) pick(Math.min(i, tracks.length - 1));
+        } else if (i < cur) cur--;
+        render(); quota();
+      }
+
+      function render() {
+        $('list').replaceChildren(...tracks.map((t, i) => {
+          const li = document.createElement('li'), p = document.createElement('button'), x = document.createElement('button');
+          li.textContent = (i === cur ? '> ' : '') + t.file.name + ' ';
+          p.textContent = 'Play';   p.onclick = () => pick(i, true);
+          x.textContent = 'Remove'; x.onclick = () => del(i);
+          li.append(p, x); return li;
+        }));
+      }
+
+      async function quota() {
+        const e = await navigator.storage?.estimate?.();
+        $('q').textContent = e ? `Storage used: ${(e.usage / 1048576).toFixed(1)} MB of ${(e.quota / 1048576).toFixed(0)} MB` : '';
+      }
+
+      $('clear').onclick = async () => {
+        await req(store('readwrite').clear());
+        tracks.forEach(t => URL.revokeObjectURL(t.url));
+        tracks = []; cur = -1; a.removeAttribute('src'); a.load();
+        localStorage.removeItem(KEY); $('now').textContent = 'Nothing loaded.'; render(); quota();
+      };
+
+      /* ---------- playback state: localStorage ---------- */
+      function save() {
+        if (cur >= 0) localStorage.setItem(KEY, JSON.stringify({
+          id: tracks[cur].id, time: a.currentTime, volume: a.volume, muted: a.muted, rate: a.defaultPlaybackRate }));
+      }
+
+      /* ---------- <audio> element API: volume, mute, seek, speed, loop, pitch ---------- */
+      $('vol').oninput = e => a.volume = e.target.value;
+      $('mute').onchange = e => a.muted = e.target.checked;
+      $('loop').onchange = e => a.loop = e.target.checked;
+      $('pitch').onchange = e => a.preservesPitch = e.target.checked;
+      $('rate').onchange = e => a.defaultPlaybackRate = a.playbackRate = +e.target.value;  // "default" survives track changes
+      $('seek').oninput = e => a.currentTime = e.target.value;
+      a.onvolumechange = () => { $('vol').value = a.volume; $('mute').checked = a.muted; save(); };
+      a.ontimeupdate = a.onloadedmetadata = () => {
+        const d = isFinite(a.duration) ? a.duration : 0;
+        $('seek').max = d; $('seek').value = a.currentTime;
+        $('t').textContent = `${a.currentTime.toFixed(1)} / ${d.toFixed(1)} s`; save();
+      };
+      a.onerror = () => alert("This browser can't play that file.");
+
+      function step(n) {
+        if (!tracks.length) return;
+        let i = (cur + n + tracks.length) % tracks.length;
+        if ($('shuffle').checked && tracks.length > 1) while ((i = Math.floor(Math.random() * tracks.length)) === cur);
+        pick(i, true);
+      }
+      $('next').onclick = () => step(1);
+      $('prev').onclick = () => step(-1);
+      a.onended = () => step(1);                           // (does not fire while loop is on)
+
+      // Media Session API: hardware media keys / lock-screen buttons
+      if ('mediaSession' in navigator) {
+        navigator.mediaSession.setActionHandler('previoustrack', () => step(-1));
+        navigator.mediaSession.setActionHandler('nexttrack', () => step(1));
+      }
+
+      /* ---------- Web Audio API: live visualizer ---------- */
+      let ctx, an;
+      a.onplay = () => {
+        if (!ctx) {
+          ctx = new AudioContext(); an = ctx.createAnalyser(); an.fftSize = 128;
+          ctx.createMediaElementSource(a).connect(an); an.connect(ctx.destination);   // once per element
+          const g = $('viz').getContext('2d'), d = new Uint8Array(an.frequencyBinCount);
+          (function loop() {
+            requestAnimationFrame(loop); an.getByteFrequencyData(d); g.clearRect(0, 0, 300, 60);
+            d.forEach((v, i) => g.fillRect(i * 300 / d.length, 60 - v * 60 / 255, 3, v * 60 / 255));
+          })();
+        }
+        ctx.resume();
+      };
+
+      /* ---------- Web Audio API: decode for metadata + waveform ---------- */
+      $('an').onclick = async () => {
+        if (cur < 0) return;
+        const f = tracks[cur].file, c = new AudioContext();
+        try {
+          const b = await c.decodeAudioData(await f.arrayBuffer());
+          $('info').textContent = `${f.name}\n${f.type || 'unknown type'}, ${f.size} bytes\n` +
+            `${b.duration.toFixed(2)} s, ${b.sampleRate} Hz, ${b.numberOfChannels} channel(s)\nmodified ${new Date(f.lastModified).toLocaleString()}`;
+          const g = $('wave').getContext('2d'), s = b.getChannelData(0), k = Math.floor(s.length / 300) || 1;
+          g.clearRect(0, 0, 300, 60);
+          for (let x = 0; x < 300; x++) {
+            let lo = 1, hi = -1;
+            for (let i = 0; i < k; i++) { const v = s[x * k + i] || 0; lo = Math.min(lo, v); hi = Math.max(hi, v); }
+            g.fillRect(x, 30 + lo * 30, 1, Math.max(1, (hi - lo) * 30));
+          }
+        } catch (e) { $('info').textContent = 'Could not decode this file.'; }
+        c.close();
+      };
+
+      /* ---------- input methods ---------- */
+      $('f').onchange = $('d').onchange = $('c').onchange = e => { add(e.target.files); e.target.value = ''; };
+      window.ondragover = e => e.preventDefault();
+      window.ondrop = e => { e.preventDefault(); add(e.dataTransfer.files); };
+      document.onpaste = e => add(e.clipboardData.files);
+
+      if (!window.showOpenFilePicker) $('fs').hidden = true;     // Chromium only, secure context
+      $('fs').onclick = async () => {
+        try {
+          const hs = await showOpenFilePicker({ multiple: true,
+            types: [{ description: 'Audio', accept: { 'audio/*': ['.mp3', '.wav', '.ogg', '.opus', '.m4a', '.aac', '.flac', '.weba'] } }] });
+          add(await Promise.all(hs.map(h => h.getFile())));
+        } catch (e) { /* cancelled */ }
+      };
+
+      $('ug').onclick = async () => {
+        try {
+          const r = await fetch($('u').value), b = await r.blob();
+          if (!r.ok) throw 0;
+          add([new File([b], decodeURIComponent(new URL(r.url).pathname.split('/').pop()) || 'remote', { type: b.type })]);
+        } catch (e) { alert('Fetch failed (network error or CORS).'); }
+      };
+
+      let rec;                                                   // getUserMedia + MediaRecorder (secure context)
+      if (!window.MediaRecorder || !navigator.mediaDevices) $('rec').hidden = true;
+      $('rec').onclick = async () => {
+        if (rec?.state === 'recording') return rec.stop();
+        try {
+          const s = await navigator.mediaDevices.getUserMedia({ audio: true }), ch = [];
+          rec = new MediaRecorder(s);
+          rec.ondataavailable = e => ch.push(e.data);
+          rec.onstop = () => {
+            s.getTracks().forEach(t => t.stop()); $('rec').textContent = 'Record microphone';
+            const t = rec.mimeType || 'audio/webm';
+            add([new File(ch, `recording-${Date.now()}.${t.split('/')[1].split(';')[0]}`, { type: t })]);
+          };
+          rec.start(); $('rec').textContent = 'Stop recording';
+        } catch (e) { alert('Microphone unavailable or permission denied.'); }
+      };
+
+      /* ---------- canPlayType table ---------- */
+      [['MP3', 'audio/mpeg'], ['WAV', 'audio/wav'], ['Ogg Vorbis', 'audio/ogg; codecs="vorbis"'],
+       ['Opus (Ogg)', 'audio/ogg; codecs="opus"'], ['Opus (WebM)', 'audio/webm; codecs="opus"'],
+       ['AAC / M4A', 'audio/mp4; codecs="mp4a.40.2"'], ['FLAC', 'audio/flac'], ['AIFF', 'audio/aiff']
+      ].forEach(([n, m]) => $('fmt').insertAdjacentHTML('beforeend', `<tr><td>${n}</td><td>${a.canPlayType(m) || 'no'}</td></tr>`));
+
+      /* ---------- startup: open DB, restore library, then last track/position/volume ---------- */
+      (async () => {
+        db = await new Promise((ok, no) => {
+          const r = indexedDB.open(KEY, 1);
+          r.onupgradeneeded = () => r.result.createObjectStore('files', { keyPath: 'id', autoIncrement: true });
+          r.onsuccess = () => ok(r.result); r.onerror = () => no(r.error);
+        });
+        (await req(store('readonly').getAll())).forEach(r => tracks.push({ id: r.id, file: r.file, url: URL.createObjectURL(r.file) }));
+        const s = JSON.parse(localStorage.getItem(KEY) || '{}'), i = tracks.findIndex(t => t.id === s.id);
+        a.volume = s.volume ?? 1; a.muted = !!s.muted;
+        a.defaultPlaybackRate = a.playbackRate = s.rate ?? 1; $('rate').value = a.playbackRate;
+        if (tracks.length) pick(Math.max(i, 0));
+        if (i >= 0) a.currentTime = s.time;
+        render(); quota();
+      })();
+    </script>
+  </body>
+</html>
