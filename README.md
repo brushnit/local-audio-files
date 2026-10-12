@@ -1,19 +1,22 @@
 # Local Audio File Script  
 ---  
+  
 ### Download Playlist or URL List  
 Update `download.py` for playlist url or list of urls to download.  
 Run script using:  
 ```
 python download.py
 ```  
-File will be write to `music/`
+File will be write to `music/`  
+  
 ---  
 ### Archive Audio Files  
 Files in `music/` will be archived into `data/`  
 Run script using:  
 ```
 python backup.py
-```  
+``` 
+   
 ---  
 #### HTML/CSS/JS Inspiration
 ```python
